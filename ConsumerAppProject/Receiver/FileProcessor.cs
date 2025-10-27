@@ -12,7 +12,7 @@ namespace Receiver
     {
         private readonly ConsumerConfig config;
         private static readonly JsonSerializerOptions jsonOptions = new() { PropertyNameCaseInsensitive = true};
-
+        private readonly string supportedSidecarVersion = "1.";
         public FileProcessor(ConsumerConfig config) => 
             this.config = config;
 
@@ -44,8 +44,37 @@ namespace Receiver
                 return;
             }
 
+            if(!metadata.version.StartsWith(supportedSidecarVersion, StringComparison.Ordinal))
+            {
+                await MoveToErrorWithReportAsync(filePath, sidecarPath, $"Unsupported sidecar metadata version: {metadata.version}");
+                return;
+            }
 
+            string computedHash = string.Empty;
 
+            try
+            {
+                computedHash = await ComputeSha256HexAsync(filePath, config.BufferSize);
+            }
+            catch(Exception ex)
+            {
+                await MoveToErrorWithReportAsync(filePath, sidecarPath, $"Failed to compute hash of data file: {ex.Message}");
+                return;
+            }
+
+            if (!string.Equals(metadata.sha256, computedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                await MoveToErrorWithReportAsync(filePath, sidecarPath, $"Hash mismatch. Expected: {metadata.sha256}, Computed: {computedHash}");
+                return;
+            }
+
+            var swTotal = System.Diagnostics.Stopwatch.StartNew();
+            int records = 0;
+        }
+
+        private async Task<string> ComputeSha256HexAsync(string filePath, int bufferSize)
+        {
+            throw new NotImplementedException();
         }
 
         private async Task MoveToErrorWithReportAsync(string filePath, string sidecarPath, string v)
