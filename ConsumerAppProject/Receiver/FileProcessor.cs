@@ -6,7 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 
-namespace ConsumerAppProject.Receiver
+namespace Receiver
 {
     public class FileProcessor
     {

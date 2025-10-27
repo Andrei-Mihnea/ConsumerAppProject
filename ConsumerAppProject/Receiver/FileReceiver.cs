@@ -1,5 +1,4 @@
-﻿using ConsumerAppProject.Objects;
-using Objects;
+﻿using Objects;
 using System;
 using System.IO;
 using System.Threading.Tasks;
