@@ -9,12 +9,12 @@ namespace Objects
     public class TelemetryRecord
     {
         public string vehicleId { get; set; }
-        public string tsUtc { get; set; }
+        public DateTime tsUtc { get; set; }
         public float speedKmh { get; set; }
         public float fuelPct { get; set; }
         public float coolantTempC {  get; set; }
 
-        public TelemetryRecord(string vehicleId, string tsUtc, float speedKmh, float fuelPct, float coolantTempC)
+        public TelemetryRecord(string vehicleId, DateTime tsUtc, float speedKmh, float fuelPct, float coolantTempC)
         {
             this.vehicleId = vehicleId;
             this.tsUtc = tsUtc;
