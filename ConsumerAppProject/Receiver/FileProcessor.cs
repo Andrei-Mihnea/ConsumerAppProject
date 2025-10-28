@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -70,11 +71,72 @@ namespace Receiver
 
             var swTotal = System.Diagnostics.Stopwatch.StartNew();
             int records = 0;
+
+            try
+            {
+                await foreach(var rec in ReadTelemtryAsync(filePath, metadata))
+                {
+                    Aggregate(rec);
+                    ++records;
+                }
+            }
+            catch(Exception ex)
+            {
+                await MoveToErrorWithReportAsync(filePath, sidecarPath, $"Failed to process data file: {ex.Message}");
+                return;
+            }
+            finally
+            {
+                swTotal.Stop();
+            }
+
+            try
+            {
+                var archiveFilePath = Path.Combine(config.Archive,
+                    DateTime.UtcNow.Year.ToString("0000"),
+                    DateTime.UtcNow.Month.ToString("00"),
+                    DateTime.UtcNow.Day.ToString("00")
+                    );
+                Directory.CreateDirectory(archiveFilePath);
+
+                var newDataFileName = Path.Combine(archiveFilePath, Path.GetFileName(filePath));
+                var newSidecarFileName = Path.Combine(archiveFilePath, Path.GetFileName(sidecarPath));
+
+                File.Move(filePath, newDataFileName, overwrite:true);
+                File.Move(sidecarPath, newSidecarFileName, overwrite:true);
+
+                Console.WriteLine($"Processed file '{filePath}' with {records} records in {swTotal.ElapsedMilliseconds} ms.");
+            }
+            catch(Exception ex)
+            {
+                await MoveToErrorWithReportAsync(filePath, sidecarPath, $"Failed to archive processed files: {ex.Message}");
+                return;
+            }
+        }
+
+        private void Aggregate(object rec)
+        {
+            throw new NotImplementedException();
+        }
+
+        private IAsyncEnumerable<object> ReadTelemtryAsync(string filePath, SidecarMetadata metadata)
+        {
+            throw new NotImplementedException();
         }
 
         private async Task<string> ComputeSha256HexAsync(string filePath, int bufferSize)
         {
-            throw new NotImplementedException();
+            using var sha256 = SHA256.Create();
+
+            await using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize, useAsync:true);
+            var buffer = new byte[bufferSize];
+            int bytesRead;
+
+            while((bytesRead = await fs.ReadAsync(buffer.AsMemory(0, buffer.Length))) > 0)
+            {
+                sha256.TransformBlock(buffer, 0, bytesRead, null, 0);
+            }
+
         }
 
         private async Task MoveToErrorWithReportAsync(string filePath, string sidecarPath, string v)

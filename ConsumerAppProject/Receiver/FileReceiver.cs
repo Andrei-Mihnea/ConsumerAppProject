@@ -9,9 +9,9 @@ namespace Receiver
     {
         private readonly ConsumerConfig config = new
         (
-            Inbox: "inbox",
-            Archive: "archive",
-            Error: "error",
+            Inbox: "inbox",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\inbox"
+            Archive: "archive",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\archive"
+            Error: "error",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\error"
             BufferSize: 128 * 1024,
             MaxRetries: 3,
             DebounceMs: 200
@@ -87,7 +87,7 @@ namespace Receiver
             long len1, len2;
             try 
             { 
-                len1 = new FileInfo(dataPath).Length; 
+                len1 = new FileInfo(dataPath).Length;
             }
             catch 
             { 
