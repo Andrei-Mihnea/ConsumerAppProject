@@ -8,10 +8,12 @@ namespace Objects
 {
     public class Kpi
     {
-        public float avgSpeed { get; set; }
-        public float minFuel { get; set; }
-        public float maxFuel { get; set; }
-        public float TempViolation { get; set; }
+        public int Count;
+        public float SpeedSum;
+        public float AvgSpeed => Count == 0 ? 0 : SpeedSum / Count;
+        public float MinFuel = -999;
+        public float MaxFuel = -999;
+        public float TempViolation;
 
         public readonly float TEMPLIMIT = 90;
     }

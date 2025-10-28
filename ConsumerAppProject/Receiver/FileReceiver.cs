@@ -9,9 +9,9 @@ namespace Receiver
     {
         private readonly ConsumerConfig config = new
         (
-            Inbox: "inbox",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\inbox"
-            Archive: "archive",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\archive"
-            Error: "error",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\error"
+            Inbox: @"test\inbox",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\inbox"
+            Archive: @"test\archive",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\archive"
+            Error: @"test\error",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\error"
             BufferSize: 128 * 1024,
             MaxRetries: 3,
             DebounceMs: 200
@@ -26,6 +26,13 @@ namespace Receiver
 
         public void CreateOnStartDirectories()
         {
+            if(Directory.Exists(config.Inbox) &&
+               Directory.Exists(config.Archive) &&
+               Directory.Exists(config.Error))
+            {
+                Console.WriteLine("[SYSTEM]: Directories already exist.");
+                return;
+            }
             Directory.CreateDirectory(config.Inbox);
             Directory.CreateDirectory(config.Archive);
             Directory.CreateDirectory(config.Error);
