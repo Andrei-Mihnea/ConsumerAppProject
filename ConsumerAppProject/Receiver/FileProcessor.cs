@@ -250,7 +250,7 @@ public class FileProcessor
             {
                 file = dataName,
                 utc = DateTime.UtcNow,
-                reason // include the reason!
+                reason
             };
             var repPath = Path.Combine(config.Error, Path.GetFileNameWithoutExtension(dataName) + ".error.json");
             await File.WriteAllTextAsync(repPath, JsonSerializer.Serialize(report, jsonOptions));
