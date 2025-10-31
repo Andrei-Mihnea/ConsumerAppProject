@@ -1,6 +1,8 @@
 ﻿using Objects;
 using System;
+using System.Collections.Concurrent;
 using System.IO;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace Receiver
@@ -18,6 +20,8 @@ namespace Receiver
         );
 
         private readonly FileProcessor processor;
+        private readonly ConcurrentDictionary<string, byte> inProgress = new(StringComparer.OrdinalIgnoreCase);
+
 
         public FileReceiver()
         {
@@ -48,6 +52,10 @@ namespace Receiver
                 Filter = "*.*",
                 EnableRaisingEvents = true
             };
+
+            Console.WriteLine($"[CFG] Inbox:   {Path.GetFullPath(config.Inbox)}");
+            Console.WriteLine($"[CFG] Archive: {Path.GetFullPath(config.Archive)}");
+            Console.WriteLine($"[CFG] Error:   {Path.GetFullPath(config.Error)}");
 
             fileWatcher.Created += async (_, e) => await TryQueue(e.FullPath);
             fileWatcher.Renamed += async (_, e) => await TryQueue(e.FullPath);
@@ -88,33 +96,95 @@ namespace Receiver
 
         private async Task TryQueue(string dataPath)
         {
-            if (dataPath.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)) return;
-            if (!IsDataFile(dataPath)) return;
-
-            long len1, len2;
-            try 
-            { 
-                len1 = new FileInfo(dataPath).Length;
-            }
-            catch 
-            { 
-                return; 
-            }
-
-            await Task.Delay(config.DebounceMs);
-
-            try 
-            { 
-                len2 = new FileInfo(dataPath).Length; 
-            }
-            catch 
-            { 
-                return; 
             
-            }
-            if (len1 != len2) return;
+            if (!IsDataFile(dataPath)) return;
+            if (!inProgress.TryAdd(dataPath, 0)) return;
 
-            await processor.ProcessFileAsync(dataPath);
+            await Task.Delay(3000);
+            _ = ProcessWithRetries(dataPath);
+
+        }
+
+        private async Task ProcessWithRetries(string dataPath)
+        {
+            try
+            {
+                var sidecar = dataPath + ".meta.json";
+
+                for (int attempt = 1; attempt <= config.MaxRetries; attempt++)
+                {
+                    if (File.Exists(sidecar))
+                    {
+                       
+                        long len1;
+                        try { len1 = new FileInfo(dataPath).Length; } catch { return; }
+                        await Task.Delay(config.DebounceMs);
+                        long len2;
+                        try { len2 = new FileInfo(dataPath).Length; } catch { return; }
+                        if (len1 != len2)
+                        {
+                            Console.WriteLine($"[WAIT] Growing: {Path.GetFileName(dataPath)}");
+                            attempt--;
+                            continue;
+                        }
+
+                        Console.WriteLine($"[QUEUE] {Path.GetFileName(dataPath)} (sidecar present)");
+                        await processor.ProcessFileAsync(dataPath);
+                        return;
+                    }
+
+                    Console.WriteLine($"[WAIT] Sidecar missing for {Path.GetFileName(dataPath)} (attempt {attempt}/{config.MaxRetries})");
+                    await Task.Delay(3000);
+                }
+
+                await MoveToErrorMissingSidecar(dataPath);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[RETRY WORKER ERROR] {ex.Message}");
+            }
+            finally
+            {
+                inProgress.TryRemove(dataPath, out _);
+            }
+        }
+
+        private async Task MoveToErrorMissingSidecar(string dataPath)
+        {
+            try
+            {
+                Directory.CreateDirectory(config.Error);
+
+                var sidecarPath = dataPath + ".meta.json";
+                var dataName = Path.GetFileName(dataPath);
+
+                if (File.Exists(dataPath))
+                {
+                    var errData = Path.Combine(config.Error, dataName);
+                    File.Move(dataPath, errData, overwrite: true);
+                }
+
+                if (File.Exists(sidecarPath))
+                {
+                    var errMeta = Path.Combine(config.Error, Path.GetFileName(sidecarPath));
+                    File.Move(sidecarPath, errMeta, overwrite: true);
+                }
+
+                var report = new
+                {
+                    file = dataName,
+                    utc = DateTime.UtcNow,
+                    reason = $"Missing sidecar after {config.MaxRetries} attempts"
+                };
+                var repPath = Path.Combine(config.Error, Path.GetFileNameWithoutExtension(dataName) + ".error.json");
+                await File.WriteAllTextAsync(repPath, JsonSerializer.Serialize(report));
+
+                Console.WriteLine($"ERR {dataName} | Missing sidecar after {config.MaxRetries} attempts");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERR (while moving to error for missing sidecar): {ex.Message}");
+            }
         }
 
         private static bool IsDataFile(string p) =>

@@ -14,15 +14,13 @@ public class FileProcessor
     private readonly ConsumerConfig config;
     private static readonly JsonSerializerOptions jsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly string supportedSidecarVersion = "1.";
-    private readonly Dictionary<(string vehicle, DateTime minute), Kpi> vehicleKpis = new();
 
     public FileProcessor(ConsumerConfig config) => this.config = config;
 
     public async Task ProcessFileAsync(string filePath)
     {
-        // Use .meta.json to match the contract
         var sidecarPath = filePath + ".meta.json";
-
+        var vehicleKpis = new Dictionary<(string vehicle, DateTime minute), Kpi>();
         if (!File.Exists(sidecarPath))
         {
             await MoveToErrorWithReportAsync(filePath, sidecarPath, "Missing sidecar metadata file.");
@@ -77,7 +75,7 @@ public class FileProcessor
         {
             await foreach (var rec in ReadTelemetryAsync(filePath, metadata))
             {
-                Aggregate(rec);
+                Aggregate(rec, vehicleKpis);
                 records++;
             }
         }
@@ -100,7 +98,7 @@ public class FileProcessor
                 DateTime.UtcNow.Day.ToString("00"));
             Directory.CreateDirectory(archiveDir);
 
-            await WriteKpisCsvAsync(archiveDir, filePath);
+            await WriteKpisJsonAsync(archiveDir, filePath, vehicleKpis);
 
             var newData = Path.Combine(archiveDir, Path.GetFileName(filePath));
             var newMeta = Path.Combine(archiveDir, Path.GetFileName(sidecarPath));
@@ -116,7 +114,7 @@ public class FileProcessor
         }
     }
 
-    private void Aggregate(TelemetryRecord rec)
+    private void Aggregate(TelemetryRecord rec, Dictionary<(string, DateTime), Kpi> vehicleKpis)
     {
         var minute = new DateTime(rec.tsUtc.Year, rec.tsUtc.Month, rec.tsUtc.Day, rec.tsUtc.Hour, rec.tsUtc.Minute, 0, DateTimeKind.Utc);
         var key = (rec.vehicleId, minute);
@@ -143,34 +141,47 @@ public class FileProcessor
         return Path.GetFileNameWithoutExtension(name);
     }
 
-    private async Task WriteKpisCsvAsync(string archiveDir, string dataFilePath)
+    private async Task WriteKpisJsonAsync(string archiveDir, string dataFilePath,
+        Dictionary<(string vehicle, DateTime minute), Kpi> vehicleKpis)
     {
         var baseName = GetBaseName(dataFilePath);
-        var kpiCsvPathTmp = Path.Combine(archiveDir, baseName + ".kpi.csv.tmp");
-        var kpiCsvPath = Path.Combine(archiveDir, baseName + ".kpi.csv");
+        var kpiPath = Path.Combine(archiveDir, baseName + ".kpis.json");
 
-        var sb = new StringBuilder();
-        sb.AppendLine("file,vehicleId,minuteUtc,avgSpeedKmh,minFuelPct,maxFuelPct,highTempCount,count");
+        var kpisByVehicle = vehicleKpis
+            .OrderBy(k => k.Key.vehicle)
+            .ThenBy(k => k.Key.minute)
+            .GroupBy(k => k.Key.vehicle)
+            .ToDictionary(
+                g=> g.Key,
+                g=> g.Select(kpiValue=> new
+                {
+                    minuteUtc = kpiValue.Key.minute,
+                    avgSpeedKmh = kpiValue.Value.AvgSpeed,
+                    minFuelPct = double.IsPositiveInfinity(kpiValue.Value.MinFuel) ? 0 : kpiValue.Value.MinFuel,
+                    maxFuelPct = double.IsNegativeInfinity(kpiValue.Value.MaxFuel) ? 0 : kpiValue.Value.MaxFuel,
+                    highTempCount = kpiValue.Value.TempViolation,
+                    count = kpiValue.Value.Count
+                }).ToList()
+            );
 
-        foreach (var kvp in vehicleKpis.OrderBy(k => k.Key.vehicle).ThenBy(k => k.Key.minute))
+        var payload = new
         {
-            var (vehicle, minute) = kvp.Key;
-            var b = kvp.Value;
+            file = baseName,
+            generatedUtc = DateTime.UtcNow,
+            kpisByVehicle,
+        };
 
-            sb.Append(baseName).Append(',')
-              .Append(vehicle).Append(',')
-              .Append(minute.ToString("o")).Append(',')
-              .Append(b.AvgSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append(',')
-              .Append(b.MinFuel.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append(',')
-              .Append(b.MaxFuel.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append(',')
-              .Append(b.TempViolation).Append(',')
-              .Append(b.Count)
-              .AppendLine();
-        }
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true,
+        };
 
-        var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-        await File.WriteAllTextAsync(kpiCsvPathTmp, sb.ToString(), utf8NoBom);
-        File.Move(kpiCsvPathTmp, kpiCsvPath, overwrite: true);
+        var json = JsonSerializer.Serialize(payload, options);
+
+        Directory.CreateDirectory(archiveDir);
+
+        await File.WriteAllTextAsync(kpiPath, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)); 
 
         vehicleKpis.Clear();
     }
