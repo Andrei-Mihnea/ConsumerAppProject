@@ -1,4 +1,5 @@
-﻿using Objects;
+﻿using Extensions;
+using Objects;
 using System;
 using System.Collections.Generic;
 using System.IO.Compression;
@@ -20,7 +21,10 @@ public class FileProcessor
     public async Task ProcessFileAsync(string filePath)
     {
         var sidecarPath = filePath + ".meta.json";
-        var vehicleKpis = new Dictionary<(string vehicle, DateTime minute), Kpi>();
+        var perMinute = new Dictionary<(string vehicle, DateTime minute), Kpi>();
+        var totals = new Dictionary<string, Kpi>(StringComparer.OrdinalIgnoreCase);
+        var prevByVehicle = new Dictionary<string, TelemetryRecord>(StringComparer.OrdinalIgnoreCase);
+
         if (!File.Exists(sidecarPath))
         {
             await MoveToErrorWithReportAsync(filePath, sidecarPath, "Missing sidecar metadata file.");
@@ -73,10 +77,9 @@ public class FileProcessor
 
         try
         {
-            await foreach (var rec in ReadTelemetryAsync(filePath, metadata))
+            await foreach (var rec in ReadTelemetryAsync(filePath, metadata).SlidingPairs())
             {
-                Aggregate(rec, vehicleKpis);
-                records++;
+                Aggregate(rec.first, rec.second, perMinute, totals);
             }
         }
         catch (Exception ex)
@@ -98,7 +101,7 @@ public class FileProcessor
                 DateTime.UtcNow.Day.ToString("00"));
             Directory.CreateDirectory(archiveDir);
 
-            await WriteKpisJsonAsync(archiveDir, filePath, vehicleKpis);
+            await WriteKpisJsonAsync(archiveDir, filePath, perMinute, totals);
 
             var newData = Path.Combine(archiveDir, Path.GetFileName(filePath));
             var newMeta = Path.Combine(archiveDir, Path.GetFileName(sidecarPath));
@@ -114,23 +117,29 @@ public class FileProcessor
         }
     }
 
-    private void Aggregate(TelemetryRecord rec, Dictionary<(string, DateTime), Kpi> vehicleKpis)
+    private void Aggregate(TelemetryRecord firstRec, TelemetryRecord secondRec,
+                          Dictionary<(string, DateTime), Kpi> perMinute,
+                          Dictionary<string, Kpi> totals)
     {
-        var minute = new DateTime(rec.tsUtc.Year, rec.tsUtc.Month, rec.tsUtc.Day, rec.tsUtc.Hour, rec.tsUtc.Minute, 0, DateTimeKind.Utc);
-        var key = (rec.vehicleId, minute);
+        var minute = new DateTime(firstRec.tsUtc.Year, firstRec.tsUtc.Month, firstRec.tsUtc.Day,
+                                  firstRec.tsUtc.Hour, firstRec.tsUtc.Minute, 0, DateTimeKind.Utc);
+        var pairAvgSpeed = (firstRec.speedKmh + secondRec.speedKmh) / 2.0;
+        var pairMinFuel = Math.Min(firstRec.fuelPct, secondRec.fuelPct);
+        var pairMaxFuel = Math.Max(firstRec.fuelPct, secondRec.fuelPct);
+        var pairTempViolation = (firstRec.coolantTempC > Kpi.TEMPLIMIT ? 1 : 0);
 
-        if (!vehicleKpis.TryGetValue(key, out var vehicleKpi))
-        {
-            vehicleKpi = new Kpi();
-            vehicleKpis[key] = vehicleKpi;
-        }
+        var key = (firstRec.vehicleId, minute);
 
-        vehicleKpi.Count++;
-        vehicleKpi.SpeedSum += rec.speedKmh;
-        vehicleKpi.MinFuel = Math.Min(vehicleKpi.MinFuel, rec.fuelPct);
-        vehicleKpi.MaxFuel = Math.Max(vehicleKpi.MaxFuel, rec.fuelPct);
-        if (rec.coolantTempC > vehicleKpi.TEMPLIMIT) vehicleKpi.TempViolation++;
+        if (!perMinute.TryGetValue(key, out var minuteKpi))
+            minuteKpi = perMinute[key] = new Kpi();
+
+        minuteKpi.Count++;
+        minuteKpi.SpeedSum += pairAvgSpeed;
+        minuteKpi.MinFuel = Math.Min(minuteKpi.MinFuel, pairMinFuel);
+        minuteKpi.MaxFuel = Math.Max(minuteKpi.MaxFuel, pairMaxFuel);
+        minuteKpi.TempViolation += pairTempViolation;
     }
+
     private static string GetBaseName(string path)
     {
         var name = Path.GetFileName(path);
@@ -141,50 +150,48 @@ public class FileProcessor
         return Path.GetFileNameWithoutExtension(name);
     }
 
-    private async Task WriteKpisJsonAsync(string archiveDir, string dataFilePath,
-        Dictionary<(string vehicle, DateTime minute), Kpi> vehicleKpis)
+    private async Task WriteKpisJsonAsync(
+       string archiveDir,
+       string dataFilePath,
+       Dictionary<(string vehicle, DateTime minute), Kpi> perMinute,
+       Dictionary<string, Kpi> totals)
     {
         var baseName = GetBaseName(dataFilePath);
         var kpiPath = Path.Combine(archiveDir, baseName + ".kpis.json");
 
-        var kpisByVehicle = vehicleKpis
-            .OrderBy(k => k.Key.vehicle)
-            .ThenBy(k => k.Key.minute)
-            .GroupBy(k => k.Key.vehicle)
+        var totalsByVehicle = perMinute
+            .OrderBy(k => k.Key)
             .ToDictionary(
-                g=> g.Key,
-                g=> g.Select(kpiValue=> new
-                {
-                    minuteUtc = kpiValue.Key.minute,
-                    avgSpeedKmh = kpiValue.Value.AvgSpeed,
-                    minFuelPct = double.IsPositiveInfinity(kpiValue.Value.MinFuel) ? 0 : kpiValue.Value.MinFuel,
-                    maxFuelPct = double.IsNegativeInfinity(kpiValue.Value.MaxFuel) ? 0 : kpiValue.Value.MaxFuel,
-                    highTempCount = kpiValue.Value.TempViolation,
-                    count = kpiValue.Value.Count
-                }).ToList()
-            );
+                k => k.Key.minute.ToString("o"),
+                k => new {
+                    avgSpeedKmh = k.Value.AvgSpeed,
+                    minFuelPct = double.IsPositiveInfinity(k.Value.MinFuel) ? 0 : k.Value.MinFuel,
+                    maxFuelPct = double.IsNegativeInfinity(k.Value.MaxFuel) ? 0 : k.Value.MaxFuel,
+                    highTempCount = k.Value.TempViolation
+                });
+
 
         var payload = new
         {
             file = baseName,
             generatedUtc = DateTime.UtcNow,
-            kpisByVehicle,
+            vehicles = totalsByVehicle
         };
 
         var options = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = true,
+            WriteIndented = true
         };
 
-        var json = JsonSerializer.Serialize(payload, options);
-
         Directory.CreateDirectory(archiveDir);
-
-        await File.WriteAllTextAsync(kpiPath, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)); 
-
-        vehicleKpis.Clear();
+        await File.WriteAllTextAsync(
+            kpiPath,
+            JsonSerializer.Serialize(payload, options),
+            new UTF8Encoding(false));
     }
+
+
 
     private async IAsyncEnumerable<TelemetryRecord> ReadTelemetryAsync(string filePath, SidecarMetadata metadata)
     {

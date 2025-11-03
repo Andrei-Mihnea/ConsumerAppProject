@@ -11,9 +11,9 @@ namespace Receiver
     {
         private readonly ConsumerConfig config = new
         (
-            Inbox: @"test\inbox",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\inbox"
-            Archive: @"test\archive",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\archive"
-            Error: @"test\error",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\error"
+            Inbox: @"C:\Producer\inbox",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\inbox"
+            Archive: @"C:\Producer\archive",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\archive"
+            Error: @"C:\Producer\error",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\error"
             BufferSize: 128 * 1024,
             MaxRetries: 3,
             DebounceMs: 200

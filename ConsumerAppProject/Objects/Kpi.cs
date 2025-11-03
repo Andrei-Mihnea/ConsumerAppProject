@@ -9,12 +9,12 @@ namespace Objects
     public class Kpi
     {
         public int Count;
-        public float SpeedSum;
-        public float AvgSpeed => Count == 0 ? 0 : SpeedSum / Count;
-        public float MinFuel = -999;
-        public float MaxFuel = -999;
-        public float TempViolation;
+        public double SpeedSum;
+        public double AvgSpeed => Count == 0 ? 0 : SpeedSum / Count;
+        public double MinFuel = double.PositiveInfinity;
+        public double MaxFuel = double.NegativeInfinity;
+        public double TempViolation;
 
-        public readonly float TEMPLIMIT = 90;
+        public const double TEMPLIMIT = 90;
     }
 }
