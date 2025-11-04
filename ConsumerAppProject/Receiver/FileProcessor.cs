@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Helper;
 
 public class FileProcessor
 {
@@ -25,11 +26,14 @@ public class FileProcessor
         var totals = new Dictionary<string, Kpi>(StringComparer.OrdinalIgnoreCase);
         var prevByVehicle = new Dictionary<string, TelemetryRecord>(StringComparer.OrdinalIgnoreCase);
 
-        if (!File.Exists(sidecarPath))
-        {
-            await MoveToErrorWithReportAsync(filePath, sidecarPath, "Missing sidecar metadata file.");
+        if (!await VerifierHelper.CheckAsync(
+                sidecarPath,
+                File.Exists,
+                filePath, sidecarPath,
+                "Missing sidecar metadata file.",
+                MoveToErrorWithReportAsync)) 
             return;
-        }
+
 
         SidecarMetadata? metadata = null;
         try
@@ -43,17 +47,28 @@ public class FileProcessor
             return;
         }
 
-        if (metadata is null)
-        {
-            await MoveToErrorWithReportAsync(filePath, sidecarPath, "Sidecar is null/empty.");
+        if (!await VerifierHelper.CheckAsync(
+                metadata,
+                mtdata => mtdata is not null,
+                filePath,
+                sidecarPath,
+                "Sidecar metadata is null.",
+                MoveToErrorWithReportAsync)) 
             return;
-        }
 
-        if (!metadata.version.StartsWith(supportedSidecarVersion, StringComparison.Ordinal))
-        {
-            await MoveToErrorWithReportAsync(filePath, sidecarPath, $"Unsupported sidecar version: {metadata.version}");
+
+#pragma warning disable CS8602 // Dereference of a possibly null reference. I know metadata is not null here.
+
+        if (!await VerifierHelper.CheckAsync(
+                metadata.version,
+                mtdVer => mtdVer.StartsWith(supportedSidecarVersion, StringComparison.Ordinal),
+                filePath,
+                sidecarPath,
+                $"Unsupported sidecar Version: {metadata.version}",
+                MoveToErrorWithReportAsync)) 
             return;
-        }
+
+#pragma warning restore CS8602 // Dereference of a possibly null reference.
 
         string computedHash;
         try
@@ -66,11 +81,14 @@ public class FileProcessor
             return;
         }
 
-        if (!string.Equals(metadata.sha256, computedHash, StringComparison.OrdinalIgnoreCase))
-        {
-            await MoveToErrorWithReportAsync(filePath, sidecarPath, $"Checksum mismatch. expected={metadata.sha256} actual={computedHash}");
+        if (!await VerifierHelper.CheckAsync(
+                (expected: metadata!.sha256, actual: computedHash),
+                pair => string.Equals(pair.expected, pair.actual, StringComparison.OrdinalIgnoreCase),
+                filePath, sidecarPath,
+                $"Checksum mismatch. expected={metadata!.sha256} actual={computedHash}",
+                MoveToErrorWithReportAsync)) 
             return;
-        }
+
 
         var swTotal = System.Diagnostics.Stopwatch.StartNew();
         int records = 0;

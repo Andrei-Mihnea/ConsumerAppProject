@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace Objects
 {
-    public class Kpi
+    public sealed class Kpi
     {
         public int Count;
         public double SpeedSum;
