@@ -10,8 +10,9 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Helper;
+using Interfaces;
 
-public class FileProcessor
+public class FileProcessor: IFileHandler
 {
     private readonly ConsumerConfig config;
     private static readonly JsonSerializerOptions jsonOptions = new() { PropertyNameCaseInsensitive = true };
@@ -19,7 +20,7 @@ public class FileProcessor
 
     public FileProcessor(ConsumerConfig config) => this.config = config;
 
-    public async Task ProcessFileAsync(string filePath)
+    private async Task ProcessFileAsync(string filePath)
     {
         var sidecarPath = filePath + ".meta.json";
         var perMinute = new Dictionary<(string vehicle, DateTime minute), Kpi>();
@@ -298,4 +299,7 @@ public class FileProcessor
             Console.WriteLine($"ERR (while moving to error): {ex.Message}");
         }
     }
+
+    public async Task HandleAsync(string filePath, CancellationToken ct = default) =>
+        await ProcessFileAsync(filePath);
 }

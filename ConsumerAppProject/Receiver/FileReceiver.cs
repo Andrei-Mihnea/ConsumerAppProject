@@ -1,38 +1,32 @@
-﻿using Objects;
+﻿using Interfaces;
+using Objects;
 using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Receiver
 {
     public class FileReceiver
     {
-        private readonly ConsumerConfig config = new
-        (
-            Inbox: @"C:\Producer\inbox",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\inbox"
-            Archive: @"C:\Producer\archive",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\archive"
-            Error: @"C:\Producer\error",//for later testing will use  @"\\ENDAUTOQ1FDTPOF\error"
-            BufferSize: 128 * 1024,
-            MaxRetries: 3,
-            DebounceMs: 200
-        );
+        private readonly ConsumerConfig config;
+        private readonly IFileHandler handler;
+        private readonly ConcurrentDictionary<string, byte> inProgress =
+            new(StringComparer.OrdinalIgnoreCase);
 
-        private readonly FileProcessor processor;
-        private readonly ConcurrentDictionary<string, byte> inProgress = new(StringComparer.OrdinalIgnoreCase);
-
-
-        public FileReceiver()
+        public FileReceiver(ConsumerConfig config, IFileHandler handler)
         {
-            processor = new FileProcessor(config);
+            this.config = config;
+            this.handler = handler;
         }
 
         public void CreateOnStartDirectories()
         {
-            if(Directory.Exists(config.Inbox) &&
-               Directory.Exists(config.Archive) &&
-               Directory.Exists(config.Error))
+            if (Directory.Exists(config.Inbox) &&
+                Directory.Exists(config.Archive) &&
+                Directory.Exists(config.Error))
             {
                 Console.WriteLine("[SYSTEM]: Directories already exist.");
                 return;
@@ -43,7 +37,7 @@ namespace Receiver
             Console.WriteLine("[SYSTEM]: Directories created on start-up.");
         }
 
-        public async Task FileWatcher()
+        public async Task RunAsync(CancellationToken ct)
         {
             using var fileWatcher = new FileSystemWatcher(config.Inbox)
             {
@@ -57,70 +51,51 @@ namespace Receiver
             Console.WriteLine($"[CFG] Archive: {Path.GetFullPath(config.Archive)}");
             Console.WriteLine($"[CFG] Error:   {Path.GetFullPath(config.Error)}");
 
-            fileWatcher.Created += async (_, e) => await TryQueue(e.FullPath);
-            fileWatcher.Renamed += async (_, e) => await TryQueue(e.FullPath);
+            fileWatcher.Created += async (_, e) => await TryQueue(e.FullPath, ct);
+            fileWatcher.Renamed += async (_, e) => await TryQueue(e.FullPath, ct);
 
             var sweepTask = Task.Run(async () =>
             {
-                while (true)
+                while (!ct.IsCancellationRequested)
                 {
                     string[] files;
-                    try 
-                    { 
-                        files = Directory.GetFiles(config.Inbox); 
-                    }
-                    catch 
-                    { 
-                        await Task.Delay(3000); 
-                        continue; 
-                    }
+                    try { files = Directory.GetFiles(config.Inbox); }
+                    catch { await Task.Delay(3000, ct); continue; }
 
                     foreach (var path in files)
                     {
-                        try 
-                        { 
-                            await TryQueue(path); 
-                        }
-                        catch (Exception ex) 
-                        { 
-                            Console.WriteLine($"[SWEEP ERROR] {ex.Message}"); 
-                        }
+                        try { await TryQueue(path, ct); }
+                        catch (Exception ex) { Console.WriteLine($"[SWEEP ERROR] {ex.Message}"); }
                     }
-                    await Task.Delay(3000);
+                    await Task.Delay(3000, ct);
                 }
-            });
+            }, ct);
 
             Console.WriteLine("Consumer running. Press Ctrl+C to exit.");
             await sweepTask;
         }
 
-        private async Task TryQueue(string dataPath)
+        private async Task TryQueue(string dataPath, CancellationToken ct)
         {
-            
             if (!IsDataFile(dataPath)) return;
             if (!inProgress.TryAdd(dataPath, 0)) return;
 
-            await Task.Delay(3000);
-            _ = ProcessWithRetries(dataPath);
-
+            await Task.Delay(3000, ct);
+            _ = ProcessWithRetries(dataPath, ct);
         }
 
-        private async Task ProcessWithRetries(string dataPath)
+        private async Task ProcessWithRetries(string dataPath, CancellationToken ct)
         {
             try
             {
                 var sidecar = dataPath + ".meta.json";
-
                 for (int attempt = 1; attempt <= config.MaxRetries; attempt++)
                 {
                     if (File.Exists(sidecar))
                     {
-                       
-                        long len1;
-                        try { len1 = new FileInfo(dataPath).Length; } catch { return; }
-                        await Task.Delay(config.DebounceMs);
-                        long len2;
-                        try { len2 = new FileInfo(dataPath).Length; } catch { return; }
+                        long len1; try { len1 = new FileInfo(dataPath).Length; } catch { return; }
+                        await Task.Delay(config.DebounceMs, ct);
+                        long len2; try { len2 = new FileInfo(dataPath).Length; } catch { return; }
                         if (len1 != len2)
                         {
                             Console.WriteLine($"[WAIT] Growing: {Path.GetFileName(dataPath)}");
@@ -129,24 +104,16 @@ namespace Receiver
                         }
 
                         Console.WriteLine($"[QUEUE] {Path.GetFileName(dataPath)} (sidecar present)");
-                        await processor.ProcessFileAsync(dataPath);
+                        await handler.HandleAsync(dataPath, ct);   // façade-injected processor
                         return;
                     }
-
                     Console.WriteLine($"[WAIT] Sidecar missing for {Path.GetFileName(dataPath)} (attempt {attempt}/{config.MaxRetries})");
-                    await Task.Delay(3000);
+                    await Task.Delay(3000, ct);
                 }
-
                 await MoveToErrorMissingSidecar(dataPath);
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[RETRY WORKER ERROR] {ex.Message}");
-            }
-            finally
-            {
-                inProgress.TryRemove(dataPath, out _);
-            }
+            catch (Exception ex) { Console.WriteLine($"[RETRY WORKER ERROR] {ex.Message}"); }
+            finally { inProgress.TryRemove(dataPath, out _); }
         }
 
         private async Task MoveToErrorMissingSidecar(string dataPath)
